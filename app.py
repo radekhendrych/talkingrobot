@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 from gpiozero import Button
 
 # ---------- Environment & config ----------
-
+os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
 load_dotenv()  # loads .env if present; safe in production when .env is owned by service user
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Gemini key
