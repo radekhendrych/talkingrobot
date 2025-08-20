@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local config & secrets
+.env
+*.json
+*.json*
+*.key
+*.pem
+conversation.json
+
+# Systemd logs (if copied)
+*.log

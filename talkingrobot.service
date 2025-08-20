@@ -1,0 +1,25 @@
+[Unit]
+Description=Push-to-talk voice assistant (Pi + ReSpeaker 2-Mics HAT)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+# Run as unprivileged user that belongs to 'audio' group
+User=pi
+WorkingDirectory=/home/pi/talkingrobot
+
+# Use the project venv interpreter
+ExecStart=/home/pi/talkingrobot/venv/bin/python /home/pi/talkingrobot/app.py
+
+# App configuration (contains keys via env but NOT secrets in code)
+EnvironmentFile=/home/pi/talkingrobot/.env
+
+# Restart resilience
+Restart=always
+RestartSec=3
+
+# A little hardening (optional; relax if needed)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
