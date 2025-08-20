@@ -5,14 +5,14 @@ Wants=network-online.target
 
 [Service]
 # Run as unprivileged user that belongs to 'audio' group
-User=pi
-WorkingDirectory=/home/pi/talkingrobot
+User=admin
+WorkingDirectory=/home/admin/talkingrobot
 
 # Use the project venv interpreter
-ExecStart=/home/pi/talkingrobot/venv/bin/python /home/pi/talkingrobot/app.py
+ExecStart=/home/admin/talkingrobot/venv/bin/python /home/admin/talkingrobot/app.py
 
 # App configuration (contains keys via env but NOT secrets in code)
-EnvironmentFile=/home/pi/talkingrobot/.env
+EnvironmentFile=/home/admin/talkingrobot/.env
 
 # Restart resilience
 Restart=always
