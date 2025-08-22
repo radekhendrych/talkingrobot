@@ -3,14 +3,14 @@
 Push-to-talk voice assistant for Raspberry Pi 4B + ReSpeaker 2-Mics HAT.
 
 Flow:
-- Hold HAT button (GPIO 17) to record natively (S32_LE/48k/stereo) from the ReSpeaker mics.
-- On release: convert to LINEAR16/48k/mono (SoX, high-quality), then transcribe (Czech default).
-- Send text to Gemini with conversation history.
-- Stream the reply and speak sentence-by-sentence via espeak-ng.
+- Hold HAT button (GPIO 17) to record natively (e.g., S32_LE/48k/stereo).
+- On release: wait until file is stable; convert to LINEAR16/48k/mono with SoX (HQ).
+- Transcribe (Czech default; English fallback).
+- Send to Gemini with streaming; speak sentence-by-sentence via espeak-ng.
 
-Notes:
-- Secrets come from environment variables (e.g., loaded via .env); no secrets in code.
-- All status/errors are spoken (headless-friendly).
+Security & ops:
+- Secrets via env (.env), not code.
+- Headless-friendly: audible feedback only.
 """
 
 from __future__ import annotations
@@ -26,9 +26,10 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Dict, Any, Generator
+from typing import Iterable, List, Dict, Any, Generator, Optional
 
 from dotenv import load_dotenv
 from gpiozero import Button
@@ -39,6 +40,11 @@ from gpiozero import Button
 
 load_dotenv()
 
+def _sanitize_device(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    return s.split('#', 1)[0].strip() or None
+
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
@@ -47,12 +53,12 @@ FALLBACK_LANGUAGE_CODE = os.getenv("FALLBACK_LANGUAGE_CODE", "en-US")
 
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-flash")
 
-ALSA_DEVICE = os.getenv("ALSA_DEVICE")          # e.g., "hw:3,0"
+ALSA_DEVICE = _sanitize_device(os.getenv("ALSA_DEVICE"))  # e.g., "hw:3,0"
 SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "48000"))
 CAPTURE_CHANNELS = int(os.getenv("CAPTURE_CHANNELS", "2"))
 CAPTURE_FORMAT = os.getenv("CAPTURE_FORMAT", "S32_LE")
 ARECORD_DEBUG = os.getenv("ARECORD_DEBUG") == "1"
-RECORD_DIR = os.getenv("RECORD_DIR")            # optional persistent folder for wavs
+RECORD_DIR = os.getenv("RECORD_DIR")  # optional persistent folder for wavs
 
 BUTTON_GPIO = int(os.getenv("BUTTON_GPIO", "17"))
 BUTTON_BOUNCE_MS = int(os.getenv("BUTTON_BOUNCE_MS", "50"))
@@ -98,7 +104,7 @@ from google.cloud import speech_v1p1beta1 as speech
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # ---------------------------------------------------------------------
-# System prompt & history
+# System prompt & history (no 'system' role stored in history)
 # ---------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -112,14 +118,16 @@ SYSTEM_PROMPT = (
 def load_history() -> List[Dict[str, Any]]:
     if CONTEXT_FILE.exists():
         try:
-            return json.loads(CONTEXT_FILE.read_text(encoding="utf-8"))
+            h = json.loads(CONTEXT_FILE.read_text(encoding="utf-8"))
+            # Strip any legacy system messages
+            return [m for m in h if m.get("role") in ("user", "model")]
         except Exception as e:
             logging.warning("History load failed: %s", e)
-    return [{"role": "system", "parts": [SYSTEM_PROMPT]}]
+    return []
 
-def save_history(history: List[Dict[str, Any]]) -> None:
+def save_history(h: List[Dict[str, Any]]) -> None:
     try:
-        CONTEXT_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        CONTEXT_FILE.write_text(json.dumps(h, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logging.warning("History save failed: %s", e)
 
@@ -129,11 +137,7 @@ def trim_history_chars(history: List[Dict[str, Any]], max_chars: int) -> List[Di
         return history
     trimmed: List[Dict[str, Any]] = []
     total = 0
-    for i, msg in enumerate(history):
-        if i == 0:
-            trimmed.append(msg)
-            total += len(json.dumps(msg, ensure_ascii=False))
-            continue
+    for msg in history:
         chunk = json.dumps(msg, ensure_ascii=False)
         if total + len(chunk) < int(max_chars * 0.7):
             trimmed.append(msg)
@@ -143,15 +147,12 @@ def trim_history_chars(history: List[Dict[str, Any]], max_chars: int) -> List[Di
     return trimmed
 
 history = load_history()
-if not history or history[0].get("role") != "system":
-    history = [{"role": "system", "parts": [SYSTEM_PROMPT]}]
-    save_history(history)
 
 # ---------------------------------------------------------------------
 # TTS (espeak-ng)
 # ---------------------------------------------------------------------
 
-say_queue: "queue.Queue[str | None]" = queue.Queue()
+say_queue: "queue.Queue[Optional[str]]" = queue.Queue()
 
 def tts_available() -> bool:
     try:
@@ -163,7 +164,7 @@ def tts_available() -> bool:
 if not tts_available():
     print("WARNING: espeak-ng not found. Install with: sudo apt-get install -y espeak-ng", file=sys.stderr)
 
-def speak(text: str | None) -> None:
+def speak(text: Optional[str]) -> None:
     say_queue.put(text)
 
 def speaker_worker() -> None:
@@ -194,15 +195,14 @@ speaker_thread.start()
 
 _SENT_END = re.compile(r"([.!?]+)(\s+|$)")
 
-def stream_speak_from_chunks(chunks: Iterable[str], first_chunk_hint_s: float | None = STREAM_START_HINT_S) -> None:
+def stream_speak_from_chunks(chunks: Iterable[str], first_chunk_hint_s: Optional[float] = STREAM_START_HINT_S) -> None:
     got_first = threading.Event()
 
     def starter_hint():
         if first_chunk_hint_s and not got_first.wait(first_chunk_hint_s):
             speak(STREAM_START_HINT_TEXT)
 
-    hint_thread = threading.Thread(target=starter_hint, daemon=True)
-    hint_thread.start()
+    threading.Thread(target=starter_hint, daemon=True).start()
 
     buf = ""
     for ch in chunks:
@@ -229,11 +229,10 @@ def stream_speak_from_chunks(chunks: Iterable[str], first_chunk_hint_s: float | 
 @dataclass
 class Recorder:
     rate: int = SAMPLE_RATE
-    device: str | None = ALSA_DEVICE
-    proc: subprocess.Popen | None = None
+    device: Optional[str] = ALSA_DEVICE
+    proc: Optional[subprocess.Popen] = None
 
     def start(self, wav_path: Path) -> None:
-        # Capture natively (e.g., S32_LE/48k/stereo) to avoid low-quality live resampling
         cmd = [
             "arecord",
             "-D", self.device if self.device else "default",
@@ -246,6 +245,10 @@ class Recorder:
         err = None if ARECORD_DEBUG else subprocess.DEVNULL
         logging.info("Recording command: %s", " ".join(cmd))
         self.proc = subprocess.Popen(cmd, preexec_fn=os.setsid, stdout=subprocess.DEVNULL, stderr=err)
+        # detect immediate failure
+        time.sleep(0.15)
+        if self.proc and self.proc.poll() is not None:
+            logging.error("arecord exited immediately (code %s). Check ALSA_DEVICE and params.", self.proc.returncode)
 
     def stop(self) -> None:
         if not self.proc:
@@ -262,44 +265,101 @@ class Recorder:
             self.proc = None
 
 # ---------------------------------------------------------------------
-# SoX conversion to LINEAR16/48k/mono (high quality)
+# SoX conversion to LINEAR16/48k/mono (high quality) + file stabilization
 # ---------------------------------------------------------------------
+
+def wait_for_stable_file(path: Path, checks: int = 3, interval: float = 0.05) -> None:
+    """Wait until file size stops changing (simple stabilization)."""
+    last = -1
+    stable = 0
+    for _ in range(200):  # up to ~10s
+        if not path.exists():
+            time.sleep(interval)
+            continue
+        sz = path.stat().st_size
+        if sz == last and sz > 0:
+            stable += 1
+            if stable >= checks:
+                return
+        else:
+            stable = 0
+            last = sz
+        time.sleep(interval)
 
 def to_speech_wav_keep_48k(input_wav: Path) -> Path:
     """
     Convert native capture to LINEAR16 (16-bit), mono, 48 kHz with high-quality processing.
     - remix 1,2  : mix L+R to mono
-    - highpass 80: remove rumble
-    - lowpass 7000: reduce hiss; speech doesn't need >7–8 kHz
-    - dither -s  : shaped dither for better perceived detail at 16-bit
+    - gain -3    : headroom to avoid clipping in filters
+    - highpass 80 / lowpass 7000
+    - dither -s  : shaped dither for better detail at 16-bit
     """
     out = input_wav.with_name(input_wav.stem + "_48k.wav")
     try:
         subprocess.run([
             "sox", str(input_wav),
             "-c", "1", "-b", "16", "-r", "48000", str(out),
-            "remix", "1,2", "highpass", "80", "lowpass", "7000", "dither", "-s"
+            "remix", "1,2",
+            "gain", "-3",
+            "highpass", "80",
+            "lowpass", "7000",
+            "dither", "-s"
         ], check=True)
         return out
     except FileNotFoundError:
         logging.error("SoX not found. Install with: sudo apt-get install -y sox libsox-fmt-all")
     except subprocess.CalledProcessError as e:
         logging.error("SoX conversion failed: %s", e)
-    # Fallback: return original (may not be LINEAR16)
+    # fallback: original file (may be S32_LE/stereo)
     return input_wav
 
 # ---------------------------------------------------------------------
-# Google STT
+# WAV inspection helper (manager-added hardening)
 # ---------------------------------------------------------------------
 
-def transcribe_wav(path: Path, language_code: str) -> str:
+def probe_wav(path: Path) -> Dict[str, Any]:
+    """
+    Inspect WAV header using Python's wave module.
+    Returns dict: channels, sampwidth_bytes, framerate_hz (or {} if not a PCM WAV).
+    """
+    try:
+        with wave.open(str(path), "rb") as w:
+            return {
+                "channels": w.getnchannels(),
+                "sampwidth_bytes": w.getsampwidth(),
+                "framerate_hz": w.getframerate(),
+            }
+    except Exception as e:
+        logging.warning("WAV probe failed for %s: %s", path, e)
+        return {}
+
+# ---------------------------------------------------------------------
+# Google STT (auto-adjust to actual WAV format if SoX failed)
+# ---------------------------------------------------------------------
+
+def transcribe_wav(path: Path, preferred_language: str) -> str:
+    meta = probe_wav(path)
+    # Default assumptions for our SoX output:
+    encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
+    sample_rate = 48000
+
+    if meta:
+        channels = meta.get("channels")
+        sampwidth = meta.get("sampwidth_bytes")
+        rate = meta.get("framerate_hz")
+        # If it's not 16-bit mono, avoid forcing LINEAR16; let backend infer.
+        if not (channels == 1 and sampwidth == 2):
+            encoding = speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
+        if isinstance(rate, int) and rate > 0:
+            sample_rate = rate
+
     client = speech.SpeechClient()
     data = path.read_bytes()
     audio = speech.RecognitionAudio(content=data)
     cfg = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-        sample_rate_hertz=48000,            # we keep 48 kHz after SoX
-        language_code=language_code,
+        encoding=encoding,
+        sample_rate_hertz=sample_rate,
+        language_code=preferred_language,
         enable_automatic_punctuation=True,
         audio_channel_count=1,
         model="latest_short" if path.stat().st_size < 1_000_000 else "latest_long",
@@ -312,13 +372,16 @@ def transcribe_wav(path: Path, language_code: str) -> str:
     return " ".join(parts).strip()
 
 # ---------------------------------------------------------------------
-# Gemini (streaming)
+# Gemini (streaming; system_instruction used here)
 # ---------------------------------------------------------------------
 
 def stream_gemini_reply(user_text: str) -> Generator[str, None, None]:
-    model = genai.GenerativeModel(MODEL_NAME)
+    model = genai.GenerativeModel(
+        MODEL_NAME,
+        system_instruction=SYSTEM_PROMPT
+    )
     compact = trim_history_chars(history, MAX_HISTORY_CHARS)
-    chat = model.start_chat(history=compact)
+    chat = model.start_chat(history=compact)  # user/model roles only
     response = chat.send_message(user_text, stream=True)
     acc: List[str] = []
     try:
@@ -365,7 +428,7 @@ def main() -> None:
     while True:
         btn.wait_for_press()
 
-        # Choose destination path (persistent or temp)
+        # Destination path (persistent or temp)
         if RECORD_DIR:
             Path(RECORD_DIR).mkdir(parents=True, exist_ok=True)
             wav_path = Path(RECORD_DIR) / f"utt_{int(time.time())}.wav"
@@ -379,8 +442,8 @@ def main() -> None:
                 btn.wait_for_release()
                 rec.stop()
 
-                # if using temp dir, file gets cleaned automatically after loop iteration
-                # (we'll finish processing before the context exits)
+        # Ensure file is written/stable before SoX reads it
+        wait_for_stable_file(wav_path)
 
         # Basic sanity check
         if not wav_path.exists() or wav_path.stat().st_size < 1600:
@@ -390,10 +453,10 @@ def main() -> None:
 
         speak("Přepisuji.")
 
-        # Convert to LINEAR16/48k/mono (high-quality; no resample from 48k)
+        # Convert to LINEAR16/48k/mono (HQ). If SoX fails, we keep original.
         processed = to_speech_wav_keep_48k(wav_path)
 
-        # Transcribe (Czech → fallback English)
+        # Transcribe (Czech -> fallback English)
         try:
             user_text = transcribe_wav(processed, LANGUAGE_CODE)
             if not user_text and FALLBACK_LANGUAGE_CODE:
