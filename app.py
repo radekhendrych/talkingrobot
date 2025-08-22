@@ -348,4 +348,260 @@ def to_speech_wav_keep_48k(input_wav: Path) -> Path:
             "lowpass", "7000",
             "dither", "-s"
         ], check=True)
-        logging.inf
+        logging.info("SoX conversion complete.")
+        return out
+    except FileNotFoundError:
+        logging.error("SoX not found. Install: sudo apt-get install -y sox libsox-fmt-all")
+    except subprocess.CalledProcessError as e:
+        logging.error("SoX failed: %s", e)
+    logging.info("Falling back to original WAV (may not be LINEAR16).")
+    return input_wav
+
+# -----------------------------------------------------------------------------
+# WAV probe & STT
+# -----------------------------------------------------------------------------
+
+def probe_wav(path: Path) -> Dict[str, Any]:
+    try:
+        with wave.open(str(path), "rb") as w:
+            info = {
+                "channels": w.getnchannels(),
+                "sampwidth_bytes": w.getsampwidth(),
+                "framerate_hz": w.getframerate(),
+                "nframes": w.getnframes(),
+            }
+            logging.info("WAV probe: %s", info)
+            return info
+    except Exception as e:
+        logging.warning("WAV probe failed for %s: %s", path, e)
+        return {}
+
+def transcribe_wav(path: Path, preferred_language: str) -> str:
+    meta = probe_wav(path)
+    encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16
+    sample_rate = 48000
+
+    if meta:
+        ch = meta.get("channels")
+        sw = meta.get("sampwidth_bytes")
+        fr = meta.get("framerate_hz")
+        if not (ch == 1 and sw == 2):
+            encoding = speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
+            logging.info("STT using ENCODING_UNSPECIFIED (non-16bit/mono input).")
+        if isinstance(fr, int) and fr > 0:
+            sample_rate = fr
+
+    logging.info("STT request: lang=%s, rate=%d, encoding=%s", preferred_language, sample_rate, encoding.name)
+    client = speech.SpeechClient()
+    audio = speech.RecognitionAudio(content=path.read_bytes())
+    cfg = speech.RecognitionConfig(
+        encoding=encoding,
+        sample_rate_hertz=sample_rate,
+        language_code=preferred_language,
+        enable_automatic_punctuation=True,
+        audio_channel_count=1,
+        model="latest_short" if path.stat().st_size < 1_000_000 else "latest_long",
+    )
+    resp = client.recognize(config=cfg, audio=audio)
+    parts: List[str] = []
+    for r in resp.results:
+        if r.alternatives:
+            parts.append(r.alternatives[0].transcript)
+    text = " ".join(parts).strip()
+    logging.info("STT result chars: %d", len(text))
+    return text
+
+# -----------------------------------------------------------------------------
+# Gemini streaming with first-chunk timeout + fallback
+# -----------------------------------------------------------------------------
+
+def stream_or_fallback_reply(user_text: str, first_chunk_timeout_s: float = 6.0) -> Generator[str, None, None]:
+    logging.info("LLM: create model with system_instruction.")
+    model = genai.GenerativeModel(MODEL_NAME, system_instruction=SYSTEM_PROMPT)
+    compact = trim_history_chars(history, MAX_HISTORY_CHARS)
+    logging.info("LLM: start chat with %d turns history.", len(compact))
+    chat = model.start_chat(history=compact)
+
+    logging.info("LLM: start streaming request.")
+    response = chat.send_message(
+        user_text,
+        stream=True,
+        request_options={"timeout": 20}
+    )
+
+    first_chunk_event = threading.Event()
+    fallback_text_holder = {"text": None}
+    stream_error_holder = {"err": None}
+
+    def producer(q: queue.Queue):
+        try:
+            for ev in response:
+                part = getattr(ev, "text", None)
+                if part:
+                    if not first_chunk_event.is_set():
+                        first_chunk_event.set()
+                    q.put(part)
+        except Exception as e:
+            stream_error_holder["err"] = e
+            logging.error("LLM stream error: %s", e)
+        finally:
+            try:
+                response.resolve()
+            except Exception:
+                pass
+        q.put(None)  # sentinel
+
+    q: "queue.Queue[Optional[str]]" = queue.Queue()
+    threading.Thread(target=producer, args=(q,), daemon=True).start()
+
+    logging.info("LLM: waiting for first streamed chunk (timeout %.1fs).", first_chunk_timeout_s)
+    if not first_chunk_event.wait(first_chunk_timeout_s):
+        logging.info("LLM: first chunk timeout; attempting non-streaming fallback.")
+        try:
+            try:
+                response.resolve()
+            except Exception:
+                pass
+            fast = chat.send_message(user_text, stream=False, request_options={"timeout": 20})
+            fallback = getattr(fast, "text", "") or ""
+            fallback_text_holder["text"] = fallback.strip()
+            logging.info("LLM: fallback obtained (%d chars).", len(fallback_text_holder["text"]))
+        except Exception as e:
+            stream_error_holder["err"] = e
+            logging.error("LLM fallback error: %s", e)
+
+    if fallback_text_holder["text"]:
+        yield fallback_text_holder["text"]
+    else:
+        total = 0
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            total += len(item)
+            yield item
+        logging.info("LLM: streaming completed (total streamed chars ~%d).", total)
+
+    # Persist history (ensure we have a full text to save)
+    full = fallback_text_holder["text"] or ""
+    if not full:
+        try:
+            final = chat.send_message(user_text, stream=False, request_options={"timeout": 20})
+            full = (getattr(final, "text", "") or "").strip()
+            logging.info("LLM: captured final text for history (%d chars).", len(full))
+        except Exception as e:
+            logging.warning("LLM: could not capture final text for history: %s", e)
+    if full:
+        history.append({"role": "user", "parts": [user_text]})
+        history.append({"role": "model", "parts": [full]})
+        save_history(history)
+
+# -----------------------------------------------------------------------------
+# Main loop
+# -----------------------------------------------------------------------------
+
+def main() -> None:
+    speak("Jsem připravená. Podrž tlačítko a mluv.")
+    logging.info("App ready. GPIO%d (bounce=%d ms). TTS device=%s", BUTTON_GPIO, BUTTON_BOUNCE_MS, TTS_ALSA_DEVICE)
+
+    btn = Button(BUTTON_GPIO, pull_up=True, bounce_time=BUTTON_BOUNCE_MS / 1000.0)
+    rec = Recorder()
+
+    # We handle stop only in the foreground loop to avoid duplicate logs
+    def handle_press():
+        logging.info("Button pressed → start recording.")
+
+    btn.when_pressed = handle_press
+    # no when_released; we stop after wait_for_release() below
+
+    while True:
+        logging.info("Waiting for button press…")
+        btn.wait_for_press()
+
+        # Destination WAV path
+        if RECORD_DIR:
+            Path(RECORD_DIR).mkdir(parents=True, exist_ok=True)
+            wav_path = Path(RECORD_DIR) / f"utt_{int(time.time())}.wav"
+            logging.info("Capture destination (persistent): %s", wav_path)
+            rec.start(wav_path)
+            btn.wait_for_release()
+            logging.info("Button released → stop recording.")
+            rec.stop()
+        else:
+            with tempfile.TemporaryDirectory() as td:
+                wav_path = Path(td) / f"utt_{int(time.time())}.wav"
+                logging.info("Capture destination (temp): %s", wav_path)
+                rec.start(wav_path)
+                btn.wait_for_release()
+                logging.info("Button released → stop recording.")
+                rec.stop()
+
+        # Ensure file is written/stable, plus tiny extra safety delay
+        wait_for_stable_file(wav_path)
+        time.sleep(0.08)
+
+        # Size sanity check
+        if not wav_path.exists():
+            logging.info("No audio file present.")
+            speak("Nic jsem nezachytila.")
+            continue
+        size = wav_path.stat().st_size
+        logging.info("Captured WAV size: %d bytes.", size)
+        if size < 1600:
+            logging.info("Audio too short.")
+            speak("Nic jsem nezachytila.")
+            continue
+
+        # Convert for STT (48k mono LINEAR16, HQ)
+        speak("Přepisuji.")
+        processed = to_speech_wav_keep_48k(wav_path)
+
+        # Transcribe (Czech → fallback English)
+        try:
+            logging.info("STT: primary language %s", LANGUAGE_CODE)
+            user_text = transcribe_wav(processed, LANGUAGE_CODE)
+            if not user_text and FALLBACK_LANGUAGE_CODE:
+                logging.info("STT: empty; trying fallback language %s", FALLBACK_LANGUAGE_CODE)
+                user_text = transcribe_wav(processed, FALLBACK_LANGUAGE_CODE)
+        except Exception as e:
+            logging.error("Transcription error: %s", e)
+            speak("Došlo k chybě při přepisu.")
+            continue
+
+        if not user_text:
+            logging.info("STT returned empty text.")
+            speak("Nerozuměla jsem.")
+            continue
+
+        logging.info("User said (%d chars): %s", len(user_text), user_text)
+
+        # Ask Gemini and stream spoken response with timeout safety
+        try:
+            logging.info("LLM: streaming or fallback reply started.")
+            chunks = stream_or_fallback_reply(user_text)
+            stream_speak_from_chunks(chunks)
+            logging.info("LLM: reply finished.")
+        except Exception as e:
+            logging.error("Gemini error: %s", e)
+            speak("Došlo k chybě při dotazu na server.")
+
+# -----------------------------------------------------------------------------
+# Graceful shutdown
+# -----------------------------------------------------------------------------
+
+def _shutdown(signum, frame):
+    logging.info("Shutting down on signal %s", signum)
+    try:
+        speak(None)  # stop TTS worker
+    except Exception:
+        pass
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _shutdown)
+signal.signal(signal.SIGINT, _shutdown)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        _shutdown(signal.SIGINT, None)
