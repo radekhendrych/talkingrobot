@@ -38,7 +38,7 @@ class GpioZeroButton(ButtonPort):
         self._led: Optional[LED] = None
         if led_gpio_pin is not None:
             self._led = LED(led_gpio_pin, active_high=led_active_high)
-            self._led.off()
+            self._set_led_state(self._btn.is_pressed)
             logger.debug(
                 "LED configured: gpio_pin=%d active_high=%s initial_state=%s",
                 led_gpio_pin,
@@ -77,8 +77,7 @@ class GpioZeroButton(ButtonPort):
             self._btn.is_pressed,
             bool(self._led),
         )
-        if self._led:
-            self._led.on()
+        self._set_led_state(True)
         if self._press_cb:
             self._press_cb()
 
@@ -89,7 +88,16 @@ class GpioZeroButton(ButtonPort):
             self._btn.is_pressed,
             bool(self._led),
         )
-        if self._led:
-            self._led.off()
+        self._set_led_state(False)
         if self._release_cb:
             self._release_cb()
+
+    def _set_led_state(self, pressed: bool) -> None:
+        if not self._led:
+            return
+        if pressed == self._led.is_lit:
+            return
+        if pressed:
+            self._led.on()
+        else:
+            self._led.off()
