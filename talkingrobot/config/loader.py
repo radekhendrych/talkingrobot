@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,9 +18,24 @@ def _read_json_if_exists(path: Path) -> Dict[str, Any]:
 
 
 def _sanitize_device(s: Optional[str]) -> Optional[str]:
+    """
+    Sanitize ALSA device strings coming from env/config to avoid passing
+    unexpected values to subprocess arguments. Rejects strings with whitespace
+    and only allows a conservative set of characters commonly used in ALSA
+    device specs (e.g., default, plughw:3,0, hw:0,0, dsnoop, etc.).
+    Comments after '#' are stripped.
+    """
     if not s:
         return None
-    return s.split('#', 1)[0].strip() or None
+    # Strip comments and surrounding whitespace
+    s = s.split('#', 1)[0].strip()
+    if not s:
+        return None
+    # Allowlist characters to reduce risk of odd control chars
+    # Allowed: letters, digits, colon, comma, dot, underscore, dash, plus, equals, slash
+    if not re.fullmatch(r"[A-Za-z0-9:,_\.\-\+=/]{1,64}", s):
+        return None
+    return s
 
 
 @dataclass
