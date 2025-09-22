@@ -21,6 +21,11 @@ class GpioZeroButton(ButtonPort):
         pull_up: bool = True,
     ):
         self._btn = Button(gpio_pin, pull_up=pull_up, bounce_time=bounce_ms / 1000.0)
+        if not pull_up:
+            logger.warning(
+                "GPIO%d configured with pull_up=False; the Grove button on the ReSpeaker HAT typically idles high.",
+                gpio_pin,
+            )
         logger.debug(
             "GpioZeroButton setup: gpio_pin=%d pull_up=%s bounce_ms=%d led_gpio=%s led_active_high=%s initial_pressed=%s",
             gpio_pin,

@@ -12,7 +12,7 @@ Later version use a separate button to trigger the recording (see below).
 
 ### Hardware: Grove LED Button
 - Connect the Grove LED Button so that its SIG2 output feeds the Seeed ReSpeaker HAT port labelled **GP12**; the default configuration uses `BUTTON_GPIO=12`.
-- The HAT already biases this line, so keep the default `BUTTON_PULL_UP=0` unless you rewire the button directly to the Pi.
+- The HAT already biases this line high; keep the default `BUTTON_PULL_UP=1` so the Pi doesn't force the line low.
 - If you wire the button's LED (SIG1), drive it through the companion pin (`BUTTON_LED_GPIO=13` by default). Otherwise leave it untouched.
 - Debounce defaults (`BUTTON_BOUNCE_MS=50`) remain reasonable; adjust if you observe spurious triggers.
 
