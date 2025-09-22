@@ -69,7 +69,9 @@ class AudioCaptureConfig:
 class ButtonConfig:
     gpio_pin: int = int(os.getenv("BUTTON_GPIO", "12"))
     bounce_ms: int = int(os.getenv("BUTTON_BOUNCE_MS", "50"))
-    pull_up: bool = _env_flag("BUTTON_PULL_UP", default=False)
+    # Grove button is wired active-low on the Respeaker HAT, so enable the
+    # internal pull-up resistor unless an override is provided.
+    pull_up: bool = _env_flag("BUTTON_PULL_UP", default=True)
     led_gpio_pin: Optional[int] = _env_optional_int("BUTTON_LED_GPIO", default=13)
     led_active_high: bool = _env_flag("BUTTON_LED_ACTIVE_HIGH", default=True)
 
