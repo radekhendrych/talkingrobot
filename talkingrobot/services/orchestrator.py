@@ -33,6 +33,7 @@ def run_assistant_loop(
         logging.info("Button pressed → start recording.")
 
     button.on_press(handle_press)
+    button.on_release(lambda: logging.info("Button released → stop recording."))
 
     while True:
         logging.info("Waiting for button press…")
@@ -45,7 +46,6 @@ def run_assistant_loop(
             logging.info("Capture destination (persistent): %s", wav_path)
             recorder.start(wav_path)
             button.wait_for_release()
-            logging.info("Button released → stop recording.")
             recorder.stop()
         else:
             with tempfile.TemporaryDirectory() as td:
@@ -53,7 +53,6 @@ def run_assistant_loop(
                 logging.info("Capture destination (temp): %s", wav_path)
                 recorder.start(wav_path)
                 button.wait_for_release()
-                logging.info("Button released → stop recording.")
                 recorder.stop()
 
         # Ensure file is written/stable, plus tiny extra safety delay

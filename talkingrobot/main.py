@@ -43,7 +43,12 @@ def main() -> None:
     genai.configure(api_key=cfg.secrets.google_api_key)
 
     # Wire adapters and services
-    button = GpioZeroButton(cfg.button.gpio_pin, cfg.button.bounce_ms)
+    button = GpioZeroButton(
+        cfg.button.gpio_pin,
+        cfg.button.bounce_ms,
+        cfg.button.led_gpio_pin,
+        cfg.button.led_active_high,
+    )
     recorder = ARecordRecorder(cfg.audio.sample_rate, cfg.audio.alsa_device, cfg.audio.channels, cfg.audio.fmt, cfg.audio.arecord_debug)
     audio_conv = SoxAudioConvert()
     history = JsonHistoryStore(cfg.llm.context_file)

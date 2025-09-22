@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import abc
 from pathlib import Path
-from typing import Dict, Any, Generator, Iterable, Optional
+from typing import Any, Callable, Dict, Generator, Iterable, Optional
 
 
 class ButtonPort(abc.ABC):
@@ -13,7 +13,10 @@ class ButtonPort(abc.ABC):
     def wait_for_release(self) -> None: ...
 
     @abc.abstractmethod
-    def on_press(self, cb) -> None: ...
+    def on_press(self, cb: Callable[[], None]) -> None: ...
+
+    @abc.abstractmethod
+    def on_release(self, cb: Callable[[], None]) -> None: ...
 
 
 class RecorderPort(abc.ABC):
@@ -64,4 +67,3 @@ class TTSPort(abc.ABC):
 class StreamingChunkerPort(abc.ABC):
     @abc.abstractmethod
     def stream_to_tts(self, chunks: Iterable[str]) -> None: ...
-

@@ -17,6 +17,23 @@ def _read_json_if_exists(path: Path) -> Dict[str, Any]:
     return {}
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_optional_int(name: str, default: Optional[int]) -> Optional[int]:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    val = val.strip()
+    if not val:
+        return None
+    return int(val)
+
+
 def _sanitize_device(s: Optional[str]) -> Optional[str]:
     """
     Sanitize ALSA device strings coming from env/config to avoid passing
@@ -50,8 +67,10 @@ class AudioCaptureConfig:
 
 @dataclass
 class ButtonConfig:
-    gpio_pin: int = int(os.getenv("BUTTON_GPIO", "17"))
+    gpio_pin: int = int(os.getenv("BUTTON_GPIO", "12"))
     bounce_ms: int = int(os.getenv("BUTTON_BOUNCE_MS", "50"))
+    led_gpio_pin: Optional[int] = _env_optional_int("BUTTON_LED_GPIO", default=13)
+    led_active_high: bool = _env_flag("BUTTON_LED_ACTIVE_HIGH", default=False)
 
 
 @dataclass
@@ -132,6 +151,7 @@ class AppConfig:
             }),
             "gpio.json": (cfg.button, {
                 "gpio_pin": "gpio_pin", "bounce_ms": "bounce_ms",
+                "led_gpio_pin": "led_gpio_pin", "led_active_high": "led_active_high",
             }),
             "tts.json": (cfg.tts, {
                 "alsa_device": "alsa_device", "voice": "voice", "rate_wpm": "rate_wpm",
