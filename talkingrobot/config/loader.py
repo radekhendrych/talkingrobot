@@ -69,8 +69,9 @@ class AudioCaptureConfig:
 class ButtonConfig:
     gpio_pin: int = int(os.getenv("BUTTON_GPIO", "12"))
     bounce_ms: int = int(os.getenv("BUTTON_BOUNCE_MS", "50"))
+    pull_up: bool = _env_flag("BUTTON_PULL_UP", default=False)
     led_gpio_pin: Optional[int] = _env_optional_int("BUTTON_LED_GPIO", default=13)
-    led_active_high: bool = _env_flag("BUTTON_LED_ACTIVE_HIGH", default=False)
+    led_active_high: bool = _env_flag("BUTTON_LED_ACTIVE_HIGH", default=True)
 
 
 @dataclass
@@ -150,7 +151,7 @@ class AppConfig:
                 "arecord_debug": "arecord_debug",
             }),
             "gpio.json": (cfg.button, {
-                "gpio_pin": "gpio_pin", "bounce_ms": "bounce_ms",
+                "gpio_pin": "gpio_pin", "bounce_ms": "bounce_ms", "pull_up": "pull_up",
                 "led_gpio_pin": "led_gpio_pin", "led_active_high": "led_active_high",
             }),
             "tts.json": (cfg.tts, {

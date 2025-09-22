@@ -25,8 +25,13 @@ def run_assistant_loop(
     tts.start()
     tts.speak(cfg.phrases.ready)
     logging.info(
-        "App ready. GPIO%d (bounce=%d ms). TTS device=%s",
-        cfg.button.gpio_pin, cfg.button.bounce_ms, cfg.tts.alsa_device,
+        "App ready. Button GPIO%d (pull_up=%s, bounce=%d ms). LED GPIO%s (active_high=%s). TTS device=%s",
+        cfg.button.gpio_pin,
+        cfg.button.pull_up,
+        cfg.button.bounce_ms,
+        cfg.button.led_gpio_pin if cfg.button.led_gpio_pin is not None else "-",
+        cfg.button.led_active_high,
+        cfg.tts.alsa_device,
     )
 
     def handle_press():

@@ -48,6 +48,7 @@ def main() -> None:
         cfg.button.bounce_ms,
         cfg.button.led_gpio_pin,
         cfg.button.led_active_high,
+        cfg.button.pull_up,
     )
     recorder = ARecordRecorder(cfg.audio.sample_rate, cfg.audio.alsa_device, cfg.audio.channels, cfg.audio.fmt, cfg.audio.arecord_debug)
     audio_conv = SoxAudioConvert()

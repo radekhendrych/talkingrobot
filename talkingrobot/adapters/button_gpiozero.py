@@ -8,8 +8,15 @@ from talkingrobot.ports import ButtonPort
 
 
 class GpioZeroButton(ButtonPort):
-    def __init__(self, gpio_pin: int, bounce_ms: int, led_gpio_pin: Optional[int] = None, led_active_high: bool = True):
-        self._btn = Button(gpio_pin, pull_up=True, bounce_time=bounce_ms / 1000.0)
+    def __init__(
+        self,
+        gpio_pin: int,
+        bounce_ms: int,
+        led_gpio_pin: Optional[int] = None,
+        led_active_high: bool = True,
+        pull_up: bool = True,
+    ):
+        self._btn = Button(gpio_pin, pull_up=pull_up, bounce_time=bounce_ms / 1000.0)
         self._led: Optional[LED] = None
         if led_gpio_pin is not None:
             self._led = LED(led_gpio_pin, active_high=led_active_high)
