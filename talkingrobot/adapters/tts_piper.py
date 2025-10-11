@@ -62,7 +62,7 @@ class PiperTTS(TTSPort):
         self._proc_lock = threading.Lock()
         self._piper_proc: Optional[subprocess.Popen] = None
         self._output_dir: Optional[tempfile.TemporaryDirectory[str]] = None
-        self._seen_files: set[Path] = set()
+        self._seen_files: dict[Path, tuple[int, int]] = {}
         self._log_preload_once = False
 
         # Python bindings are optional; load lazily to avoid import errors at module import time.
@@ -76,7 +76,8 @@ class PiperTTS(TTSPort):
             return
 
         self._running.set()
-        self._output_dir = tempfile.TemporaryDirectory(prefix="piper_tts_")
+        tmp_root = os.getenv("TMPDIR") or "/tmp"
+        self._output_dir = tempfile.TemporaryDirectory(dir=tmp_root, prefix="piper_tts_")
         self._seen_files.clear()
 
         try:
@@ -235,6 +236,7 @@ class PiperTTS(TTSPort):
             logging.error("PiperTTS playback failed: %s", exc)
         finally:
             try:
+                self._seen_files.pop(wav_path, None)
                 wav_path.unlink(missing_ok=True)
             except Exception:
                 pass
@@ -307,10 +309,20 @@ class PiperTTS(TTSPort):
         seen = self._seen_files
         while time.monotonic() < deadline:
             for path in self._output_dir_path.glob("*.wav"):
-                if path in seen:
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                signature = (int(stat.st_mtime_ns), int(stat.st_size))
+                if seen.get(path) == signature:
                     continue
                 wait_for_stable_file(path)
-                seen.add(path)
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                signature = (int(stat.st_mtime_ns), int(stat.st_size))
+                seen[path] = signature
                 return path
             time.sleep(0.05)
         raise TimeoutError("Timed out waiting for Piper output wav")

@@ -40,13 +40,19 @@ class _FakeStdIn:
 
 
 class _FakeProc:
-    def __init__(self, output_dir: Path, wav_bytes: bytes) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        wav_bytes: bytes,
+        filename_factory: Callable[[int], str] | None = None,
+    ) -> None:
         self._alive = True
         self._wav_bytes = wav_bytes
         self._output_dir = output_dir
         self.stdin = _FakeStdIn(self._handle_write)
         self.stderr = io.StringIO()
         self.write_count = 0
+        self._filename_factory = filename_factory or (lambda count: f"utt_{count}.wav")
 
     def _handle_write(self, data: str) -> None:
         payload = data.strip()
@@ -54,7 +60,7 @@ class _FakeProc:
             return
         msg = json.loads(payload)
         self.write_count += 1
-        target = self._output_dir / f"utt_{self.write_count}.wav"
+        target = self._output_dir / self._filename_factory(self.write_count)
         target.write_bytes(self._wav_bytes)
 
     def poll(self) -> int | None:
@@ -72,14 +78,15 @@ class _FakeProc:
 
 
 class _FakeProcessFactory:
-    def __init__(self, wav_bytes: bytes) -> None:
+    def __init__(self, wav_bytes: bytes, filename_factory: Callable[[int], str] | None = None) -> None:
         self.wav_bytes = wav_bytes
         self.calls: list[tuple[list[str], Path]] = []
         self.proc: _FakeProc | None = None
+        self._filename_factory = filename_factory
 
     def __call__(self, cmd: list[str], output_dir: Path) -> _FakeProc:
         self.calls.append((cmd, output_dir))
-        self.proc = _FakeProc(output_dir, self.wav_bytes)
+        self.proc = _FakeProc(output_dir, self.wav_bytes, filename_factory=self._filename_factory)
         return self.proc
 
 
@@ -123,6 +130,38 @@ class PiperTTSTest(unittest.TestCase):
             assert factory.proc is not None  # type narrow for type checkers
             self.assertEqual(factory.proc.write_count, 2)
             self.assertEqual(len(playback_calls), 2)
+        finally:
+            tts.stop()
+
+    def test_handles_reused_output_filename(self) -> None:
+        wav_bytes = _make_wav_bytes()
+        factory = _FakeProcessFactory(wav_bytes, filename_factory=lambda _: "reused.wav")
+        playback_payloads: list[bytes] = []
+
+        def playback(path: Path, device: str, timeout: float) -> None:  # noqa: ARG002
+            self.assertTrue(path.exists())
+            playback_payloads.append(path.read_bytes())
+
+        tts = PiperTTS(
+            "default",
+            str(self.fake_bin),
+            str(self.fake_model),
+            process_factory=factory,
+            playback_runner=playback,
+        )
+
+        try:
+            tts.start()
+            tts.speak("Repeat once.")
+            tts.speak("Repeat twice.")
+            tts._queue.join()
+            self.assertEqual(len(factory.calls), 1)
+            self.assertIsNotNone(factory.proc)
+            assert factory.proc is not None
+            self.assertEqual(factory.proc.write_count, 2)
+            self.assertEqual(len(playback_payloads), 2)
+            for payload in playback_payloads:
+                self.assertEqual(payload, wav_bytes)
         finally:
             tts.stop()
 
