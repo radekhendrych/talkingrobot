@@ -82,6 +82,8 @@ class TTSConfig:
     alsa_device: Optional[str] = _sanitize_device(os.getenv("TTS_ALSA_DEVICE") or "plughw:3,0")
     voice: str = os.getenv("VOICE", "cs")
     rate_wpm: int = int(os.getenv("SPEAK_RATE_WPM", "185"))
+    piper_bin: str = os.getenv("PIPER_BIN", "/home/admin/piper/piper/piper")
+    piper_model: str = os.getenv("PIPER_MODEL", "/home/admin/piper/piper/voices/cs/cs_CZ-jirka-medium.onnx")
 
 
 @dataclass
@@ -159,6 +161,7 @@ class AppConfig:
             }),
             "tts.json": (cfg.tts, {
                 "alsa_device": "alsa_device", "voice": "voice", "rate_wpm": "rate_wpm",
+                "piper_bin": "piper_bin", "piper_model": "piper_model",
             }),
             "stt.json": (cfg.stt, {
                 "language": "language", "fallback_language": "fallback_language",

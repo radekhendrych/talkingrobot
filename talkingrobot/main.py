@@ -16,7 +16,7 @@ from talkingrobot.adapters.history_json import JsonHistoryStore
 from talkingrobot.adapters.llm_gemini import GeminiLLM
 from talkingrobot.adapters.stt_google import GoogleCloudSTT
 from talkingrobot.adapters.recorder_arecord import ARecordRecorder
-from talkingrobot.adapters.tts_espeak import EspeakAplayTTS
+from talkingrobot.adapters.tts_piper import PiperTTS
 from talkingrobot.config.loader import AppConfig, resolve_config_dir
 from talkingrobot.services.orchestrator import run_assistant_loop
 from talkingrobot.services.streaming import StreamingChunker
@@ -55,7 +55,7 @@ def main() -> None:
     history = JsonHistoryStore(cfg.llm.context_file)
     stt = GoogleCloudSTT()
     llm = GeminiLLM(cfg.llm.model_name, cfg.llm.system_prompt, history, cfg.llm.max_history_chars, cfg.llm.stream_start_hint_s)
-    tts = EspeakAplayTTS(cfg.tts.alsa_device or "default", cfg.tts.voice, cfg.tts.rate_wpm)
+    tts = PiperTTS(cfg.tts.alsa_device or "default", cfg.tts.piper_bin, cfg.tts.piper_model)
     chunker = StreamingChunker(tts, cfg.llm.stream_start_hint_s, cfg.llm.stream_start_hint_text)
 
     def shutdown(signum, frame):

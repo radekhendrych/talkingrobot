@@ -5,6 +5,12 @@ Python app which listens for spoken input, transcribes, interacts with select AI
 ## Prerequisites
 Version 1.2 and onward assumes having piper module installed.
 
+### Text-to-Speech
+- Spoken output runs on Piper with the `cs_CZ-jirka-medium` model. The model is loaded exactly once during process startup so subsequent responses stream immediately.
+- Override the Piper binary or model path by exporting `PIPER_BIN` or `PIPER_MODEL` (defaults: `/home/admin/piper/piper/piper` and `/home/admin/piper/piper/voices/cs/cs_CZ-jirka-medium.onnx`).
+- If Piper ships a custom config JSON alongside the model, set `PIPER_MODEL_CONFIG` to point to it; the adapter will wire it in automatically.
+- Audio playback remains routed through `aplay` and honours `TTS_ALSA_DEVICE`.
+
 ## Context
 Assumes usage of Raspberry Pi 4B with Seeed Respeaker HAT. 
 The first version (prior to introduction of release management) assumed that recording of input would be triggered by pushing the button on the HAT, which physically maps to GPIO 11.
